@@ -3,6 +3,7 @@ import type { Stream } from "openai/streaming.mjs";
 import { TreeService, type TreeResult } from "./services/treeService";
 import { existsSync, readFile, readFileSync } from "fs";
 import { join } from "path";
+import type { z } from "zod";
 
 export interface CreateAgentOptions {
     toolGroup?: string[],
@@ -43,6 +44,13 @@ export namespace Fragola {
         tools: string[],
     }
 
+    export interface ToolConfig<T extends z.ZodType<any, any>> {
+        name: string,
+        description: string,
+        handler: (parameters: z.infer<T>) => string,
+        schema: T
+    }
+
     /**
      * Represents an agent with associated prompts.
      */
@@ -71,7 +79,7 @@ export namespace Fragola {
         /**
          * The group to which the tool belongs.
          */
-        group: string;
+        group?: string;
 
         /**
          * Indicates if the tool is a Bash file.
@@ -109,6 +117,7 @@ export class Fragola {
 
     }
     public static createAgent = (config: Fragola.AgentConfig) => config;
+    public static createTool = <T extends z.ZodType<any, any>>(config: Fragola.ToolConfig<T>): Fragola.ToolConfig<T> => config;
 
     private updateProject(callback: (prev: Fragola.Project) => Fragola.Project) {
         this.project = callback(this.project);
@@ -193,18 +202,3 @@ let project: Fragola.Project = {
     tools: [],
     agents: []
 }
-
-// export function createAgent(options: CreateAgentOptions | CreateAgentOptionsStreaming): OpenAI.Chat.ChatCompletionCreateParamsNonStreaming | OpenAI.Chat.ChatCompletionCreateParamsStreaming {
-//     // const agent = project.agents.find(agent => agent.name == "navigation")
-//     // const systemPrompt = (() => {
-//     //     if (options.systemPrompt)
-//     //         return options.systemPrompt;
-//     // })();
-//     // if ("steaming" in options) {
-//     //     // let body: OpenAI.Chat.ChatCompletionCreateParamsStreaming = {
-
-//     //     // }
-//     // } else {
-
-//     // }
-// }
