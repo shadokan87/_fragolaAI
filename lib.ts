@@ -42,6 +42,15 @@ export namespace Fragola {
 
     export interface AgentConfig {
         tools: string[],
+        /**
+         * Use an instruction as system prompt, will ignore prompt files
+         */
+        instructions?: string,
+        /**
+         * Use a `.md` prompt file present in agent directory. Input the name of the file only without `.md`.
+         * Defaults to `default.md`
+         */
+        prompt?: string
     }
 
     export interface ToolConfig<T extends z.ZodType<any, any>> {
@@ -85,6 +94,7 @@ export namespace Fragola {
          * Indicates if the tool is a Bash file.
          */
         isBashFile?: boolean;
+        config: ToolConfig<any>
     }
 
     /**
@@ -176,7 +186,7 @@ export class Fragola {
                     prompts,
                     config
                 }
-                console.log(agentData);
+                // console.log(agentData);
                 this.updateProject((prev) => {
                     return {
                         ...prev,
@@ -191,7 +201,19 @@ export class Fragola {
         } else
             console.warn("Fragola: no agent found")
         if (tools) {
-
+            const allSubDirectories = tools.children?.filter(child => child.type == "directory");
+            const getToolConfigFromFile = async (path: string) => {
+                const config = await import(path);
+                console.log("!config", config);
+            }
+            allSubDirectories?.forEach(async node => {
+                const allTools = node.children?.filter(child => child.type == "file" && child.name.endsWith(".tool.ts"));
+                await getToolConfigFromFile(allTools![0].custom.fullPath);
+                console.log("all", allTools);
+            });
+            // const handleToolFile = async (node: TreeResult): Promise<Fragola.ToolConfig> => {
+            //     const 
+            // }
         } else
             console.warn("Fragola: no tools found");
         // console.log("tree: ", tree);
