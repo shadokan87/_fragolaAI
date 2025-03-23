@@ -131,6 +131,7 @@ export class Fragola {
 
     private updateProject(callback: (prev: Fragola.Project) => Fragola.Project) {
         this.project = callback(this.project);
+        console.log(this.project.tools[1]?.config);
     }
 
     public async init() {
@@ -155,7 +156,7 @@ export class Fragola {
                 const configFunction = await import(agentFsNode.custom.fullPath);
                 const _default = configFunction["default"];
                 if (!_default) {
-                    throw new Error(`Failed to retrieve config for agent \`${agent.name}\`. Make sure to use the \`createAgent\` function`);
+                    throw new Error(`Failed to load config for agent \`${agent.name}\`. Make sure to use the \`createAgent\` function`);
                 }
 
                 const config: Fragola.AgentConfig = _default;
@@ -197,30 +198,50 @@ export class Fragola {
                     }
                 })
             });
-            console.log(allAgents);
+            // console.log(allAgents);
         } else
             console.warn("Fragola: no agent found")
         if (tools) {
+            const isToolFile = (fileName: string) => fileName.endsWith(".tool.ts") || fileName.endsWith(".tool.js");
+            // Folders of tools group
             const allSubDirectories = tools.children?.filter(child => child.type == "directory");
-            const getToolConfigFromFile = async (path: string) => {
-                const config = await import(path);
-                console.log("!config", config);
+            // Tools without folders
+            const individualTools = tools.children?.filter(child => child.type == "file" && isToolFile(child.name));
+
+            const getToolConfigFromFile = async (node: TreeResult, parentDirNode?: TreeResult) => {
+                const configFunction = await import(node.custom.fullPath);
+                const _default  = configFunction["default"];
+                if (!_default) {
+                    throw new Error(`Failed to load config for tool '${node.name}'`);
+                }
+                // console.log("default", _default);
+                const config: Fragola.ToolConfig<any> = _default;
+                const tool: Fragola.Tool = {
+                    group: parentDirNode && parentDirNode.name || undefined,
+                    config
+                }
+                // console.log("tool", tool);
+                this.updateProject((prev) => {
+                    return {
+                        ...prev,
+                        tools: [
+                            ...prev.tools,
+                            tool
+                        ]
+                    }
+                })
             }
-            allSubDirectories?.forEach(async node => {
-                const allTools = node.children?.filter(child => child.type == "file" && child.name.endsWith(".tool.ts"));
-                await getToolConfigFromFile(allTools![0].custom.fullPath);
-                console.log("all", allTools);
-            });
-            // const handleToolFile = async (node: TreeResult): Promise<Fragola.ToolConfig> => {
-            //     const 
-            // }
+            await Promise.all(allSubDirectories?.map(async node => {
+                const allTools = node.children?.filter(child => child.type == "file" && isToolFile(child.name));
+                if (allTools?.length)
+                    await Promise.all(allTools?.map(async tool => await getToolConfigFromFile(tool, node)));
+            }) || []);
+
+            await Promise.all(individualTools?.map(async node => {
+                await Promise.all(individualTools.map(async tool => await getToolConfigFromFile(tool)));
+            }) || [])
         } else
             console.warn("Fragola: no tools found");
         // console.log("tree: ", tree);
     }
-}
-
-let project: Fragola.Project = {
-    tools: [],
-    agents: []
 }

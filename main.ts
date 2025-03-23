@@ -2,7 +2,6 @@
 import OpenAI from "openai";
 import { Fragola } from "./lib";
 
-console.log("Hello via Bun!");
 async function main() {
     const fragola = new Fragola({
         streaming: async (body) => {
