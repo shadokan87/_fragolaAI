@@ -1,7 +1,7 @@
 import openai, { OpenAI } from "openai";
 import type { Stream } from "openai/streaming.mjs";
-import { TreeService } from "./services/treeService";
-import { existsSync } from "fs";
+import { TreeService, type TreeResult } from "./services/treeService";
+import { existsSync, readFile, readFileSync } from "fs";
 import { join } from "path";
 
 export interface CreateAgentOptions {
@@ -130,19 +130,41 @@ export class Fragola {
             allAgents?.forEach(async agent => {
                 const agentFsNode = agent.children?.find(child => child.name == "+agent.ts" || child.name == "+agent.js");
                 if (!agentFsNode) {
-                    throw new Error(`Failed to find source code file for agent: ${agent.name}. Make sure to name it like so: +agent.ts or +agent.js`)
+                    throw new Error(`Failed to find source code file for agent: ${agent.name}. Expected file name to be: \`+agent\`.ts or \`+agent.js\``);
                 }
+
                 const configFunction = await import(agentFsNode.custom.fullPath);
                 const _default = configFunction["default"];
                 if (!_default) {
                     throw new Error(`Failed to retrieve config for agent \`${agent.name}\`. Make sure to use the \`createAgent\` function`);
                 }
+
                 const config: Fragola.AgentConfig = _default;
+                // Retrieving prompts
+                const promptsFsNodes = agent.children?.filter(child => child.name.endsWith(".md"));
+                const handlePromptFile = async (node: TreeResult): Promise<Fragola.PromptFile> => {
+                    try {
+                        const content = readFileSync(node.custom.fullPath, 'utf-8'); // Specify encoding
+                        return {
+                            name: node.name,
+                            path: node.custom.fullPath,
+                            content: content
+                        };
+                    } catch (error) {
+                        console.error(`Failed to read prompt file at '${node.custom.fullPath}'':`, error);
+                        throw error; // Rethrow the error if you want to handle it further up the call stack
+                    }
+                };
+                if (!promptsFsNodes?.length) {
+                    //TODO: create default.md prompt
+                }
+                const prompts = promptsFsNodes ? await Promise.all(promptsFsNodes.map(node => handlePromptFile(node))) : [];
+                // agentData.prompts = prompts;
                 // console.log(agentFsNode);
                 let agentData: Fragola.Agent = {
-                    prompts: [],
                     name: agent.name,
                     path: agent.path,
+                    prompts,
                     config
                 }
                 console.log(agentData);
