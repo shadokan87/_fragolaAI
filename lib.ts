@@ -4,6 +4,9 @@ import { TreeService, type TreeResult } from "./services/treeService";
 import { existsSync, readFile, readFileSync } from "fs";
 import { join } from "path";
 import type { z } from "zod";
+import { nanoid } from "nanoid";
+import { AgentNotFoundError } from "./exceptions";
+import type { ChatCompletionCreateParamsBase } from "openai/resources/chat/completions.mjs";
 
 export interface CreateAgentOptions {
     toolGroup?: string[],
@@ -46,11 +49,8 @@ export namespace Fragola {
          * Use an instruction as system prompt, will ignore prompt files
          */
         instructions?: string,
-        /**
-         * Use a `.md` prompt file present in agent directory. Input the name of the file only without `.md`.
-         * Defaults to `default.md`
-         */
-        prompt?: string
+   
+        prompt?: string //TODO
     }
 
     export interface ToolConfig<T extends z.ZodType<any, any>> {
@@ -111,18 +111,102 @@ export namespace Fragola {
          */
         agents: Agent[];
     }
+
+    export type runEventType =
+        "streamStart"
+        | "streamChunk"
+        | "streamEnd"
+        | "runStart"
+        | "runEnd"
+        | "toolRequested"
+        | "toolSubmitSuccess"
+        | "toolSubmitError"
+
+    //@prettier-ignore
+    export type runHookCallBackMap = {
+        [K in Fragola.runEventType]
+        : K extends "streamStart" | "streamEnd" ? (controller: RunController) => Promise<void>
+        : K extends "streamChunk" ? (controller: RunController, chunk: OpenAI.Chat.Completions.ChatCompletionChunk) => Promise<void>
+        : K extends "runStart" | "runEnd" ? (controller: RunController) => Promise<void>
+        : K extends "toolRequested" ? (controller: RunController, toolName: string, parameters: any) => Promise<void>
+        : K extends "toolSubmitSuccess" | "toolSubmitError" ? (controller: RunController, toolName: string, result: any) => Promise<void>
+        : never;
+    };
+
+    export interface RunController {
+        isRunning: boolean;
+        stopRun(): void,
+        getConversation(): OpenAI.ChatCompletionMessageParam[],
+        setConversation: (prev?: OpenAI.ChatCompletionMessageParam[]) => OpenAI.ChatCompletionMessageParam[]
+    }
+
+    export type runHook = (controller: RunController, conversation: OpenAI.ChatCompletionMessageParam[]) => void;
 }
 
 type FragolaStreamingCallback = (body: OpenAI.Chat.ChatCompletionCreateParamsStreaming) => Promise<Stream<OpenAI.Chat.Completions.ChatCompletionChunk> & {
     _request_id?: string | null;
 }>
 
+export interface hookStore<K extends keyof Fragola.runHookCallBackMap> {
+    id: string,
+    name: K,
+    callback: Fragola.runHookCallBackMap[K]
+}
+
+export class Run {
+    private controller: Fragola.RunController | undefined = undefined;
+    public id: string;
+    private isRunning: boolean = false;
+    private project: Fragola.Project;
+    public agent: Fragola.Agent | undefined;
+    private hookStore: hookStore<any>[] = []
+    private conversation: OpenAI.ChatCompletionMessageParam[] = [];
+
+    constructor(agentName: string, project: Fragola.Project) {
+        this.id = nanoid();
+        this.project = project
+        this.agent = project.agents.find(agent => agent.name == agentName);
+        if (!this.agent)
+            throw new AgentNotFoundError(agentName);
+    }
+
+    public registerHook<K extends Fragola.runEventType>(name: K, callback: Fragola.runHookCallBackMap[K]): () => void {
+        const id = nanoid();
+        this.hookStore = [...this.hookStore, { id, name, callback }];
+        return () => {
+            this.hookStore.filter(hook => hook.id != id)
+        }
+    }
+
+    private getLastMessage(withSystemPrompt?: boolean) {
+        if (!withSystemPrompt && this.conversation.length == 1)
+            return undefined;
+        return this.conversation.at(-1);
+    }
+
+    public userMessage(message: Omit<OpenAI.Chat.ChatCompletionUserMessageParam, "role">): boolean {
+        const lastMessage = this.getLastMessage();
+        const canAppend: boolean = !lastMessage || (
+            lastMessage.role == "assistant"
+        );
+        if (canAppend) {
+            this.conversation = [...this.conversation, {role: "user", ...message}];
+            return true;
+        }
+        return false;
+    }
+}
+
 export class Fragola {
-    constructor(aiRequest: {
-        streaming: FragolaStreamingCallback
-    }, private project: Fragola.Project = {
+    private project: Fragola.Project = {
         tools: [],
         agents: []
+    }
+
+    private runs: Record<string, Run> = {}
+
+    constructor(aiRequest: {
+        streaming: FragolaStreamingCallback
     }) {
 
     }
@@ -132,6 +216,12 @@ export class Fragola {
     private updateProject(callback: (prev: Fragola.Project) => Fragola.Project) {
         this.project = callback(this.project);
         console.log(this.project.tools[1]?.config);
+    }
+
+    public createRun(agentName: Fragola.Agent["name"], params: ChatCompletionCreateParamsBase): Run {
+        const run = new Run(agentName, this.project);
+        this.runs[run.id] = run;
+        return run;
     }
 
     public async init() {
@@ -148,7 +238,7 @@ export class Fragola {
         if (agents) {
             const allAgents = agents.children?.filter(child => child.type == "directory");
             allAgents?.forEach(async agent => {
-                const agentFsNode = agent.children?.find(child => child.name == "+agent.ts" || child.name == "+agent.js");
+                const agentFsNode = agent.children?.find(child => child.name == "agent.ts" || child.name == "agent.js");
                 if (!agentFsNode) {
                     throw new Error(`Failed to find source code file for agent: ${agent.name}. Expected file name to be: \`+agent\`.ts or \`+agent.js\``);
                 }
@@ -210,7 +300,7 @@ export class Fragola {
 
             const getToolConfigFromFile = async (node: TreeResult, parentDirNode?: TreeResult) => {
                 const configFunction = await import(node.custom.fullPath);
-                const _default  = configFunction["default"];
+                const _default = configFunction["default"];
                 if (!_default) {
                     throw new Error(`Failed to load config for tool '${node.name}'`);
                 }

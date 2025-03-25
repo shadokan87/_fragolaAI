@@ -11,6 +11,7 @@
   "dependencies": {
     "@types/node": "^22.13.11",
     "directory-tree": "^3.5.2",
+    "nanoid": "^5.1.5",
     "openai": "^4.89.0",
     "zod": "^3.24.2"
   }
