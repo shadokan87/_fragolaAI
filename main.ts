@@ -1,19 +1,29 @@
 // import { agentNavigation } from "./ai/agents/navigation/agentNavigation";
 import OpenAI from "openai";
 import { Fragola } from "./lib";
+import { PORTKEY_GATEWAY_URL, createHeaders } from "portkey-ai";
 
 async function main() {
-    const fragola = new Fragola({
-        streaming: async (body) => {
-            return await new OpenAI({ apiKey: "xxx" }).chat.completions.create(body);
-        }
+    const openai = new OpenAI({
+      apiKey: 'xxx',
+      baseURL: PORTKEY_GATEWAY_URL,
+      defaultHeaders: createHeaders({
+        virtualKey: process.env["BEDROCK_DEV"],
+        apiKey: process.env["PORTKEY_API_KEY"]})
     });
 
+    const fragola = new Fragola(async (body) => await openai.chat.completions.create(body));
+
     await fragola.init();
-    const navigationRun = fragola.createRun("navigation");
+    const navigationRun = fragola.createRun("navigation", {
+        model: "'us.anthropic.claude-3-5-haiku-20241022-v1:0' as any",
+        temperature: 1,
+        stream: true
+    });
+
     navigationRun.userMessage({content: "asadasdasd"});
 
-    // navigationRun.registerHook("toolRequested", (controller) => {
+    // const remove = navigationRun.registerHook("toolRequested", (controller) => {
         
     // });
 

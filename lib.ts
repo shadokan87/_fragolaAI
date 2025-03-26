@@ -162,7 +162,7 @@ export class Run {
     private hookStore: hookStore<any>[] = []
     private conversation: OpenAI.ChatCompletionMessageParam[] = [];
 
-    constructor(agentName: string, project: Fragola.Project) {
+    constructor(agentName: string, project: Fragola.Project, private aiRequest: FragolaStreamingCallback) {
         this.id = nanoid();
         this.project = project
         this.agent = project.agents.find(agent => agent.name == agentName);
@@ -185,6 +185,10 @@ export class Run {
     }
 
     public userMessage(message: Omit<OpenAI.Chat.ChatCompletionUserMessageParam, "role">): boolean {
+        if (!this.isRunning) {
+            console.warn("You called userMessage() without calling start()");
+            return false;
+        }
         const lastMessage = this.getLastMessage();
         const canAppend: boolean = !lastMessage || (
             lastMessage.role == "assistant"
@@ -205,10 +209,7 @@ export class Fragola {
 
     private runs: Record<string, Run> = {}
 
-    constructor(aiRequest: {
-        streaming: FragolaStreamingCallback
-    }) {
-
+    constructor(private aiRequest: FragolaStreamingCallback) {
     }
     public static createAgent = (config: Fragola.AgentConfig) => config;
     public static createTool = <T extends z.ZodType<any, any>>(config: Fragola.ToolConfig<T>): Fragola.ToolConfig<T> => config;
@@ -218,8 +219,8 @@ export class Fragola {
         console.log(this.project.tools[1]?.config);
     }
 
-    public createRun(agentName: Fragola.Agent["name"], params: ChatCompletionCreateParamsBase): Run {
-        const run = new Run(agentName, this.project);
+    public createRun(agentName: Fragola.Agent["name"], params: Omit<ChatCompletionCreateParamsBase, "messages">): Run {
+        const run = new Run(agentName, this.project, this.aiRequest);
         this.runs[run.id] = run;
         return run;
     }
