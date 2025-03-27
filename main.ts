@@ -15,13 +15,19 @@ async function main() {
     const fragola = new Fragola(async (body) => await openai.chat.completions.create(body));
 
     await fragola.init();
+    let conversation: OpenAI.ChatCompletionMessageParam[] = [];
     const navigationRun = fragola.createRun("navigation", {
         model: "'us.anthropic.claude-3-5-haiku-20241022-v1:0' as any",
         temperature: 1,
         stream: true
     });
 
-    navigationRun.userMessage({content: "asadasdasd"});
+    navigationRun.registerHook("conversationUpdate", async (controller, messages) => {
+        console.log("messages: ", messages);
+        // conversation = messages
+    });
+    navigationRun.start();
+    await navigationRun.userMessage({content: "asadasdasd"});
 
     // const remove = navigationRun.registerHook("toolRequested", (controller) => {
         

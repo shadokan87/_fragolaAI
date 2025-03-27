@@ -49,7 +49,7 @@ export namespace Fragola {
          * Use an instruction as system prompt, will ignore prompt files
          */
         instructions?: string,
-   
+
         prompt?: string //TODO
     }
 
@@ -113,6 +113,8 @@ export namespace Fragola {
     }
 
     export type runEventType =
+        "conversationUpdate"
+        |
         "streamStart"
         | "streamChunk"
         | "streamEnd"
@@ -125,6 +127,7 @@ export namespace Fragola {
     //@prettier-ignore
     export type runHookCallBackMap = {
         [K in Fragola.runEventType]
+        : K extends "conversationUpdate" ? (controller: RunController, conversation: OpenAI.ChatCompletionMessageParam[]) => void
         : K extends "streamStart" | "streamEnd" ? (controller: RunController) => Promise<void>
         : K extends "streamChunk" ? (controller: RunController, chunk: OpenAI.Chat.Completions.ChatCompletionChunk) => Promise<void>
         : K extends "runStart" | "runEnd" ? (controller: RunController) => Promise<void>
@@ -149,8 +152,8 @@ type FragolaStreamingCallback = (body: OpenAI.Chat.ChatCompletionCreateParamsStr
 
 export interface hookStore<K extends keyof Fragola.runHookCallBackMap> {
     id: string,
-    name: K,
-    callback: Fragola.runHookCallBackMap[K]
+    // name: K,
+    fn: Fragola.runHookCallBackMap[K]
 }
 
 export class Run {
@@ -159,10 +162,10 @@ export class Run {
     private isRunning: boolean = false;
     private project: Fragola.Project;
     public agent: Fragola.Agent | undefined;
-    private hookStore: hookStore<any>[] = []
+    private hooks: Map<Fragola.runEventType, hookStore<any>[]> = new Map();
     private conversation: OpenAI.ChatCompletionMessageParam[] = [];
 
-    constructor(agentName: string, project: Fragola.Project, private aiRequest: FragolaStreamingCallback) {
+    constructor(agentName: string, project: Fragola.Project, private aiRequest: FragolaStreamingCallback, private params: Omit<ChatCompletionCreateParamsBase, "messages">) {
         this.id = nanoid();
         this.project = project
         this.agent = project.agents.find(agent => agent.name == agentName);
@@ -170,11 +173,30 @@ export class Run {
             throw new AgentNotFoundError(agentName);
     }
 
+    public start() {
+        this.isRunning = true;
+    }
+
     public registerHook<K extends Fragola.runEventType>(name: K, callback: Fragola.runHookCallBackMap[K]): () => void {
         const id = nanoid();
-        this.hookStore = [...this.hookStore, { id, name, callback }];
+        const prev = this.hooks.get(name);
+        const hook: hookStore<any> = { id, fn: callback };
+        if (prev) {
+            this.hooks.set(name, [...prev, hook])
+        } else {
+            this.hooks.set(name, [hook]);
+        }
         return () => {
-            this.hookStore.filter(hook => hook.id != id)
+            const prev = this.hooks.get(name);
+            if (prev) {
+                const filtered = prev.filter(hook => hook.id != id);
+                if (filtered.length != prev.length) {
+                    if (filtered.length == 0)
+                        this.hooks.delete(name);
+                    else
+                        this.hooks.set(name, filtered);
+                }
+            }
         }
     }
 
@@ -184,7 +206,18 @@ export class Run {
         return this.conversation.at(-1);
     }
 
-    public userMessage(message: Omit<OpenAI.Chat.ChatCompletionUserMessageParam, "role">): boolean {
+    private applyHook<K extends Fragola.runEventType>(name: K, ...args: Parameters<Fragola.runHookCallBackMap[K]>) {
+        const hooks = this.hooks.get(name);
+        hooks && hooks.forEach(hook => hook.fn(...args));
+    }
+
+    private updateConversation(callback: (prev: OpenAI.ChatCompletionMessageParam[]) => OpenAI.ChatCompletionMessageParam[]) {
+        // const hooks = this.hooks.get("conversationUpdate");
+        this.conversation = callback(this.conversation);
+        this.applyHook("conversationUpdate", this.controller!, this.conversation);
+    }
+
+    public async userMessage(message: Omit<OpenAI.Chat.ChatCompletionUserMessageParam, "role">): Promise<boolean> {
         if (!this.isRunning) {
             console.warn("You called userMessage() without calling start()");
             return false;
@@ -194,7 +227,13 @@ export class Run {
             lastMessage.role == "assistant"
         );
         if (canAppend) {
-            this.conversation = [...this.conversation, {role: "user", ...message}];
+            this.updateConversation(prev => [...prev, {role: "user", ...message}]);
+            let aiMessage: Partial<OpenAI.Chat.ChatCompletionMessageParam> = {};
+            // const stream = await this.aiRequest({...this.params, messages: this.conversation, stream: true});
+            // for await (const chunk of stream) {
+            //     console.log(chunk);
+            // }
+            // this.conversation = [...this.conversation, { role: "user", ...message }];
             return true;
         }
         return false;
@@ -216,11 +255,10 @@ export class Fragola {
 
     private updateProject(callback: (prev: Fragola.Project) => Fragola.Project) {
         this.project = callback(this.project);
-        console.log(this.project.tools[1]?.config);
     }
 
     public createRun(agentName: Fragola.Agent["name"], params: Omit<ChatCompletionCreateParamsBase, "messages">): Run {
-        const run = new Run(agentName, this.project, this.aiRequest);
+        const run = new Run(agentName, this.project, this.aiRequest, params);
         this.runs[run.id] = run;
         return run;
     }
@@ -270,8 +308,6 @@ export class Fragola {
                     //TODO: create default.md prompt
                 }
                 const prompts = promptsFsNodes ? await Promise.all(promptsFsNodes.map(node => handlePromptFile(node))) : [];
-                // agentData.prompts = prompts;
-                // console.log(agentFsNode);
                 let agentData: Fragola.Agent = {
                     name: agent.name,
                     path: agent.path,
@@ -289,7 +325,6 @@ export class Fragola {
                     }
                 })
             });
-            // console.log(allAgents);
         } else
             console.warn("Fragola: no agent found")
         if (tools) {
@@ -305,13 +340,11 @@ export class Fragola {
                 if (!_default) {
                     throw new Error(`Failed to load config for tool '${node.name}'`);
                 }
-                // console.log("default", _default);
                 const config: Fragola.ToolConfig<any> = _default;
                 const tool: Fragola.Tool = {
                     group: parentDirNode && parentDirNode.name || undefined,
                     config
                 }
-                // console.log("tool", tool);
                 this.updateProject((prev) => {
                     return {
                         ...prev,
@@ -333,6 +366,5 @@ export class Fragola {
             }) || [])
         } else
             console.warn("Fragola: no tools found");
-        // console.log("tree: ", tree);
     }
 }
