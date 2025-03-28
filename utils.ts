@@ -1,19 +1,19 @@
 import type OpenAI from "openai";
 
 export const streamChunkToMessage = (chunk: OpenAI.Chat.Completions.ChatCompletionChunk,message: Partial<OpenAI.Chat.ChatCompletionMessageParam> = {} as Partial<OpenAI.Chat.ChatCompletionMessageParam>) => {
-    console.log("__CHUNK__", JSON.stringify(chunk.choices, null, 2));
     let updatedMessage = structuredClone(message);
 
     // Handle role if present in delta
     if (chunk.choices[0].delta?.role) {
         updatedMessage.role = chunk.choices[0].delta.role;
-    } else
+    } else if (!message.role)
         updatedMessage.role = "assistant";
 
     // Handle content if present in delta
     if (chunk.choices[0].delta?.content) {
         updatedMessage.content = (message.content || '') + chunk.choices[0].delta.content;
-    }
+    } else if (!message.content)
+        updatedMessage.content = "";
 
     // Handle tool_calls if present in delta
     if (chunk.choices[0].delta?.tool_calls && updatedMessage.role === "assistant") {

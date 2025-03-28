@@ -7,6 +7,7 @@ import type { z } from "zod";
 import { nanoid } from "nanoid";
 import { AgentNotFoundError } from "./exceptions";
 import type { ChatCompletionCreateParamsBase } from "openai/resources/chat/completions.mjs";
+import { streamChunkToMessage } from "./utils";
 
 export interface CreateAgentOptions {
     toolGroup?: string[],
@@ -124,120 +125,31 @@ export namespace Fragola {
         | "toolSubmitSuccess"
         | "toolSubmitError"
 
+    type maybePromise<T> = Promise<T> | T;
     //@prettier-ignore
     export type runHookCallBackMap = {
         [K in Fragola.runEventType]
-        : K extends "conversationUpdate" ? (controller: RunController, conversation: OpenAI.ChatCompletionMessageParam[]) => void
-        : K extends "streamStart" | "streamEnd" ? (controller: RunController) => Promise<void>
-        : K extends "streamChunk" ? (controller: RunController, chunk: OpenAI.Chat.Completions.ChatCompletionChunk) => Promise<void>
-        : K extends "runStart" | "runEnd" ? (controller: RunController) => Promise<void>
-        : K extends "toolRequested" ? (controller: RunController, toolName: string, parameters: any) => Promise<void>
-        : K extends "toolSubmitSuccess" | "toolSubmitError" ? (controller: RunController, toolName: string, result: any) => Promise<void>
+        : K extends "conversationUpdate" ? (controller: RunController, conversation: OpenAI.ChatCompletionMessageParam[]) => maybePromise<void>
+        : K extends "streamStart" | "streamEnd" ? (controller: RunController) => maybePromise<void>
+        : K extends "streamChunk" ? (controller: RunController, chunk: OpenAI.Chat.Completions.ChatCompletionChunk) => maybePromise<void>
+        : K extends "runStart" | "runEnd" ? (controller: RunController) => maybePromise<void>
+        : K extends "toolRequested" ? (controller: RunController, toolName: string, parameters: any) => maybePromise<void>
+        : K extends "toolSubmitSuccess" | "toolSubmitError" ? (controller: RunController, toolName: string, result: any) => maybePromise<void>
         : never;
     };
 
     export interface RunController {
         isRunning: boolean;
         stopRun(): void,
-        getConversation(): OpenAI.ChatCompletionMessageParam[],
-        setConversation: (prev?: OpenAI.ChatCompletionMessageParam[]) => OpenAI.ChatCompletionMessageParam[]
     }
 
     export type runHook = (controller: RunController, conversation: OpenAI.ChatCompletionMessageParam[]) => void;
 }
 
-type FragolaStreamingCallback = (body: OpenAI.Chat.ChatCompletionCreateParamsStreaming) => Promise<Stream<OpenAI.Chat.Completions.ChatCompletionChunk> & {
-    _request_id?: string | null;
-}>
-
 export interface hookStore<K extends keyof Fragola.runHookCallBackMap> {
     id: string,
     // name: K,
     fn: Fragola.runHookCallBackMap[K]
-}
-
-export class Run {
-    private controller: Fragola.RunController | undefined = undefined;
-    public id: string;
-    private isRunning: boolean = false;
-    private project: Fragola.Project;
-    public agent: Fragola.Agent | undefined;
-    private hooks: Map<Fragola.runEventType, hookStore<any>[]> = new Map();
-    private conversation: OpenAI.ChatCompletionMessageParam[] = [];
-
-    constructor(agentName: string, project: Fragola.Project, private aiRequest: FragolaStreamingCallback, private params: Omit<ChatCompletionCreateParamsBase, "messages">) {
-        this.id = nanoid();
-        this.project = project
-        this.agent = project.agents.find(agent => agent.name == agentName);
-        if (!this.agent)
-            throw new AgentNotFoundError(agentName);
-    }
-
-    public start() {
-        this.isRunning = true;
-    }
-
-    public registerHook<K extends Fragola.runEventType>(name: K, callback: Fragola.runHookCallBackMap[K]): () => void {
-        const id = nanoid();
-        const prev = this.hooks.get(name);
-        const hook: hookStore<any> = { id, fn: callback };
-        if (prev) {
-            this.hooks.set(name, [...prev, hook])
-        } else {
-            this.hooks.set(name, [hook]);
-        }
-        return () => {
-            const prev = this.hooks.get(name);
-            if (prev) {
-                const filtered = prev.filter(hook => hook.id != id);
-                if (filtered.length != prev.length) {
-                    if (filtered.length == 0)
-                        this.hooks.delete(name);
-                    else
-                        this.hooks.set(name, filtered);
-                }
-            }
-        }
-    }
-
-    private getLastMessage(withSystemPrompt?: boolean) {
-        if (!withSystemPrompt && this.conversation.length == 1)
-            return undefined;
-        return this.conversation.at(-1);
-    }
-
-    private applyHook<K extends Fragola.runEventType>(name: K, ...args: Parameters<Fragola.runHookCallBackMap[K]>) {
-        const hooks = this.hooks.get(name);
-        hooks && hooks.forEach(hook => hook.fn(...args));
-    }
-
-    private updateConversation(callback: (prev: OpenAI.ChatCompletionMessageParam[]) => OpenAI.ChatCompletionMessageParam[]) {
-        // const hooks = this.hooks.get("conversationUpdate");
-        this.conversation = callback(this.conversation);
-        this.applyHook("conversationUpdate", this.controller!, this.conversation);
-    }
-
-    public async userMessage(message: Omit<OpenAI.Chat.ChatCompletionUserMessageParam, "role">): Promise<boolean> {
-        if (!this.isRunning) {
-            console.warn("You called userMessage() without calling start()");
-            return false;
-        }
-        const lastMessage = this.getLastMessage();
-        const canAppend: boolean = !lastMessage || (
-            lastMessage.role == "assistant"
-        );
-        if (canAppend) {
-            this.updateConversation(prev => [...prev, {role: "user", ...message}]);
-            let aiMessage: Partial<OpenAI.Chat.ChatCompletionMessageParam> = {};
-            // const stream = await this.aiRequest({...this.params, messages: this.conversation, stream: true});
-            // for await (const chunk of stream) {
-            //     console.log(chunk);
-            // }
-            // this.conversation = [...this.conversation, { role: "user", ...message }];
-            return true;
-        }
-        return false;
-    }
 }
 
 export class Fragola {
@@ -248,8 +160,8 @@ export class Fragola {
 
     private runs: Record<string, Run> = {}
 
-    constructor(private aiRequest: FragolaStreamingCallback) {
-    }
+    constructor(private sdk: OpenAI) { }
+
     public static createAgent = (config: Fragola.AgentConfig) => config;
     public static createTool = <T extends z.ZodType<any, any>>(config: Fragola.ToolConfig<T>): Fragola.ToolConfig<T> => config;
 
@@ -258,7 +170,7 @@ export class Fragola {
     }
 
     public createRun(agentName: Fragola.Agent["name"], params: Omit<ChatCompletionCreateParamsBase, "messages">): Run {
-        const run = new Run(agentName, this.project, this.aiRequest, params);
+        const run = new Run(agentName, params, this.project, this.sdk);
         this.runs[run.id] = run;
         return run;
     }
@@ -366,5 +278,156 @@ export class Fragola {
             }) || [])
         } else
             console.warn("Fragola: no tools found");
+    }
+}
+
+export class Run {
+    private controller: Fragola.RunController | undefined = undefined;
+    public id: string;
+    private isRunning: boolean = false;
+    public agent: Fragola.Agent | undefined;
+    private hooks: Map<Fragola.runEventType, hookStore<any>[]> = new Map();
+    private conversation: OpenAI.ChatCompletionMessageParam[] = [];
+
+    constructor(agentName: string, private params: Omit<ChatCompletionCreateParamsBase, "messages">, private project: Fragola.Project, private sdk: OpenAI) {
+        this.id = nanoid();
+        this.agent = project.agents.find(agent => agent.name == agentName);
+        if (!this.agent)
+            throw new AgentNotFoundError(agentName);
+        this.controller = {
+            isRunning: this.isRunning,
+            stopRun: () => {},
+        }
+    }
+
+    public start(): void {
+        this.isRunning = true;
+    }
+
+    public getConversation(): openai.Chat.Completions.ChatCompletionMessageParam[] {
+        return this.conversation;
+    }
+
+    public setConversation(callback: (prev?: OpenAI.ChatCompletionMessageParam[]) => OpenAI.ChatCompletionMessageParam[], overrideSystemRole?: boolean): void {
+        let newConversation = callback(this.conversation);
+        if (!overrideSystemRole) {
+            const firstMessage = this.conversation.at(0);
+            if (firstMessage && firstMessage.role == "system")
+                newConversation.shift();
+        }
+        this.conversation = newConversation;
+    }
+
+
+    public registerHook<K extends Fragola.runEventType>(name: K, callback: Fragola.runHookCallBackMap[K]): () => void {
+        const id = nanoid();
+        const prev = this.hooks.get(name);
+        const hook: hookStore<any> = { id, fn: callback };
+        if (prev) {
+            this.hooks.set(name, [...prev, hook])
+        } else {
+            this.hooks.set(name, [hook]);
+        }
+        return () => {
+            const prev = this.hooks.get(name);
+            if (prev) {
+                const filtered = prev.filter(hook => hook.id != id);
+                if (filtered.length != prev.length) {
+                    if (filtered.length == 0)
+                        this.hooks.delete(name);
+                    else
+                        this.hooks.set(name, filtered);
+                }
+            }
+        }
+    }
+
+    private getLastMessage(withSystemPrompt?: boolean): openai.Chat.Completions.ChatCompletionMessageParam | undefined {
+        if (!withSystemPrompt && this.conversation.length == 1)
+            return undefined;
+        return this.conversation.at(-1);
+    }
+
+    private async applyHook<K extends Fragola.runEventType>(name: K, ...args: Parameters<Fragola.runHookCallBackMap[K]>): Promise<void> {
+        const hooks = this.hooks.get(name);
+        if (hooks) {
+            for (const hook of hooks) {
+                const typedFn = hook.fn as (...params: Parameters<Fragola.runHookCallBackMap[K]>) => ReturnType<Fragola.runHookCallBackMap[K]>;
+                const isAsync = typedFn.constructor.name == "AsyncFunction";
+                if (isAsync) {
+                    await typedFn(...args);
+                }
+                else {
+                    typedFn(...args);
+                }
+            }
+        }
+    }
+
+    private updateConversation(callback: (prev: OpenAI.ChatCompletionMessageParam[]) => OpenAI.ChatCompletionMessageParam[]): void {
+        // const hooks = this.hooks.get("conversationUpdate");
+        this.conversation = callback(this.conversation);
+        this.applyHook("conversationUpdate", this.controller!, this.conversation);
+    }
+
+    private appendMessages(messages: OpenAI.ChatCompletionMessageParam[], replaceLast: boolean = false) {
+        this.updateConversation((prev) => {
+            if (replaceLast)
+                return [...prev.slice(0, -1), ...messages];
+            return [...prev, ...messages]
+        });
+    }
+
+
+    public async userMessage(message: Omit<OpenAI.Chat.ChatCompletionUserMessageParam, "role">): Promise<boolean> {
+        if (!this.isRunning) {
+            console.warn("You called userMessage() without calling start()");
+            return false;
+        }
+        const lastMessage = this.getLastMessage();
+        const canAppend: boolean = !lastMessage || (
+            lastMessage.role == "assistant"
+        );
+        if (canAppend) {
+            this.updateConversation(prev => [...prev, { role: "user", ...message }]);
+            let aiMessage: Partial<OpenAI.Chat.ChatCompletionMessageParam> = {};
+                const stream = await this.sdk.chat.completions.create({ ...this.params, messages: this.conversation });
+                if (Symbol.asyncIterator in stream) {
+                    let replaceLast = false;
+
+                    // Streaming
+                    this.applyHook("streamStart", this.controller!);
+                    for await (const chunk of stream) {
+                        this.applyHook("streamChunk", this.controller!, chunk);
+                        aiMessage = streamChunkToMessage(chunk, aiMessage);
+                        this.appendMessages([aiMessage as OpenAI.Chat.ChatCompletionMessageParam], replaceLast);
+                        replaceLast = true;
+                    }
+                    this.applyHook("streamEnd", this.controller!);
+
+                    // Tool calls
+                    if (aiMessage.role == "assistant" && aiMessage.tool_calls && aiMessage.tool_calls.length) {
+                        await Promise.all(aiMessage.tool_calls.map(async toolCall => {
+                            const tool = this.project.tools.find(tool => tool.config.name == toolCall.function.name);
+                            if (!tool) {
+                                console.error(`Tool with name ${toolCall.function.name} not found in project`); //TODO: replace with exception
+                                return ;
+                            }
+                            let paramsParsed: z.SafeParseReturnType<any, any> | undefined;
+                            if (tool.config.schema) {
+                                paramsParsed = (tool.config.schema as z.Schema).safeParse(JSON.parse(toolCall.function.arguments));
+                                if (!paramsParsed.success) {
+                                    //TODO: replace with exception
+                                    console.error(`Zod parse fail for tool '${toolCall.function.name}'`);
+                                }
+                            }
+                        }));
+                    }
+                } else {
+                    console.error("Stream is not async iterable.");
+                }
+            return true;
+        }
+        return false;
     }
 }
