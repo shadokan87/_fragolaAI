@@ -1,7 +1,7 @@
 import { Fragola } from "../../../lib";
 
-const navigation = Fragola.createAgent({
-    tools: ["navigation/*"],
+const weather = Fragola.createAgent({
+    tools: ["weather/*"],
 });
 
-export default navigation;
+export default weather;

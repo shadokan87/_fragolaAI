@@ -20,8 +20,24 @@ export class AgentNotFoundError extends FragolaError {
     }
 }
 
-// export class AgentDuplicateError extends FragolaError {
-//     constructor(agentId: string, group?: string) {
-//         super(`A`)
-//     }
-// }
+// Specific exception class
+export class AgentConfigError extends FragolaError {
+    constructor(agentId: string, message: string) { //TODO: remove agentId parameter
+        super(message);
+        this.name = 'AgentConfigError';
+        if (Error.captureStackTrace) {
+            Error.captureStackTrace(this, AgentConfigError);
+        }
+    }
+}
+
+// Specific exception class
+export class ToolConfigError extends FragolaError {
+    constructor(message: string) {
+        super(message);
+        this.name = 'ToolConfigError';
+        if (Error.captureStackTrace) {
+            Error.captureStackTrace(this, ToolConfigError);
+        }
+    }
+}

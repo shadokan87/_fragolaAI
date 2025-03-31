@@ -5,9 +5,11 @@ import { existsSync, readFile, readFileSync } from "fs";
 import { join } from "path";
 import type { z } from "zod";
 import { nanoid } from "nanoid";
-import { AgentNotFoundError } from "./exceptions";
+import { AgentConfigError, AgentNotFoundError, FragolaError, ToolConfigError } from "./exceptions";
 import type { ChatCompletionCreateParamsBase } from "openai/resources/chat/completions.mjs";
 import { streamChunkToMessage } from "./utils";
+import { zodToJsonSchema } from "openai/_vendor/zod-to-json-schema/zodToJsonSchema.mjs";
+import type { ChatCompletionMessageParam, ChatCompletionTool } from "openai/src/resources.js";
 
 export interface CreateAgentOptions {
     toolGroup?: string[],
@@ -57,7 +59,7 @@ export namespace Fragola {
     export interface ToolConfig<T extends z.ZodType<any, any>> {
         name: string,
         description: string,
-        handler: (parameters: z.infer<T>) => string,
+        handler: (parameters: z.infer<T>) => maybePromise<string>,
         schema: T
     }
 
@@ -169,7 +171,7 @@ export class Fragola {
         this.project = callback(this.project);
     }
 
-    public createRun(agentName: Fragola.Agent["name"], params: Omit<ChatCompletionCreateParamsBase, "messages">): Run {
+    public createRun(agentName: Fragola.Agent["name"], params: Omit<ChatCompletionCreateParamsBase, "messages" | "tools">): Run {
         const run = new Run(agentName, params, this.project, this.sdk);
         this.runs[run.id] = run;
         return run;
@@ -257,6 +259,10 @@ export class Fragola {
                     group: parentDirNode && parentDirNode.name || undefined,
                     config
                 }
+                const split = node.name.split("."); // TODO: check proper length and format
+                const fileToolName = node.name.split(".")[0];
+                if (!fileToolName || fileToolName != tool.config.name)
+                    throw new ToolConfigError(`File name for tool '${tool.config.name}' must be indentical. Expected '${config.name}.tool.${split[split.length - 1]}' but got ${fileToolName}.tool.${split[split.length - 1]}`);
                 this.updateProject((prev) => {
                     return {
                         ...prev,
@@ -288,20 +294,86 @@ export class Run {
     public agent: Fragola.Agent | undefined;
     private hooks: Map<Fragola.runEventType, hookStore<any>[]> = new Map();
     private conversation: OpenAI.ChatCompletionMessageParam[] = [];
+    private runConfig: {
+        agentTools: Fragola.Tool[]
+    } = { agentTools: [] }
+    private paramsTools: ChatCompletionCreateParamsBase["tools"] = [];
 
-    constructor(agentName: string, private params: Omit<ChatCompletionCreateParamsBase, "messages">, private project: Fragola.Project, private sdk: OpenAI) {
+    constructor(agentName: string, private params: Omit<ChatCompletionCreateParamsBase, "messages" | "tools">, private project: Fragola.Project, private sdk: OpenAI) {
         this.id = nanoid();
         this.agent = project.agents.find(agent => agent.name == agentName);
         if (!this.agent)
             throw new AgentNotFoundError(agentName);
+        this.agentToRunConfig();
         this.controller = {
             isRunning: this.isRunning,
-            stopRun: () => {},
+            stopRun: () => { },
         }
     }
 
+    private async agentToRunConfig() {
+        const toolPattern = /^[a-zA-Z0-9-_]+(?:\/(?:[a-zA-Z0-9-_]+|\*))?$/;
+        if (!this.agent) {
+            // TODO: handle error
+            return;
+        }
+        const agent: Fragola.Agent = this.agent;
+        const tools: Fragola.Tool[] = agent.config.tools.flatMap(str => {
+            if (!toolPattern.test(str))
+                throw new AgentConfigError(agent.name,
+                    `Invalid tool pattern: "${str}". Tools must follow format: "toolName" or "groupName/toolName" or "groupName/*". ` +
+                    `Examples: "calculator", "math/calculator", "filesystem/*"`
+                );
+            if (str.includes("/")) {
+                const split = str.split("/");
+                const groupName = split[0];
+                const name = split[1];
+                const groupNameExist = this.project.tools.find(tool => tool.group == groupName);
+                if (!groupNameExist)
+                    throw new AgentConfigError(agent.name, `Group with name '${groupName}' does not exist or contains 0 tools`);
+
+                if (name == "*") {
+                    const filteredTools = this.project.tools.filter((tool) => tool.group == groupName);
+                    if (!filteredTools.length)
+                        console.warn(`Group name '${groupName}' is correct but contains 0 tools. For wildcard expression.`);
+                    return filteredTools;
+                } else {
+                    const found = this.project.tools.find((tool) => tool.group == groupName && tool.config.name == name);
+                    if (!found)
+                        throw new AgentConfigError(agent?.name, `Tool with name '${name} does not exist, for group name ${groupName}'`);
+                    return found;
+                }
+            } else {
+                const found = this.project.tools.find((tool) => tool.config.name == str);
+                if (!found)
+                    throw new AgentConfigError(agent.name, `Tool with name '${str}' does not exist`);
+                return found;
+            }
+        }) || [];
+        this.runConfig.agentTools = tools;
+        // console.log(JSON.stringify(this.runConfig, null, 2));
+    }
+
+    private toolsToParamsTools() {
+        const result: ChatCompletionCreateParamsBase["tools"] = [];
+        this.runConfig.agentTools.forEach(tool => {
+            result.push({
+                type: "function",
+                function: {
+                    name: tool.config.name,
+                    description: tool.config.description,
+                    parameters: zodToJsonSchema(tool.config.schema)
+                }
+
+            })
+        });
+        this.paramsTools = result;
+    }
+
     public start(): void {
+        this.toolsToParamsTools();
         this.isRunning = true;
+        console.log(this.paramsTools);
     }
 
     public getConversation(): openai.Chat.Completions.ChatCompletionMessageParam[] {
@@ -379,6 +451,55 @@ export class Run {
     }
 
 
+    private async recursiveAgent(messages: OpenAI.ChatCompletionMessageParam[], iter = 0): Promise<void> {
+        if (iter == 5) {
+            console.error("max iter");
+            return ;
+        }
+        const stream = await this.sdk.chat.completions.create({ ...this.params, messages: this.conversation, tools: this.paramsTools?.length ? this.paramsTools : [] });
+        let aiMessage: Partial<OpenAI.Chat.ChatCompletionMessageParam> = {};
+        if (Symbol.asyncIterator in stream) {
+            let replaceLast = false;
+
+            // Streaming
+            this.applyHook("streamStart", this.controller!);
+            for await (const chunk of stream) {
+                this.applyHook("streamChunk", this.controller!, chunk);
+                aiMessage = streamChunkToMessage(chunk, aiMessage);
+                this.appendMessages([aiMessage as OpenAI.Chat.ChatCompletionMessageParam], replaceLast);
+                replaceLast = true;
+            }
+            this.applyHook("streamEnd", this.controller!);
+
+            // Tool calls
+            if (aiMessage.role == "assistant" && aiMessage.tool_calls && aiMessage.tool_calls.length) {
+                await Promise.all(aiMessage.tool_calls.map(async toolCall => {
+                    const tool = this.project.tools.find(tool => tool.config.name == toolCall.function.name);
+                    if (!tool) {
+                        console.error(`Tool with name ${toolCall.function.name} not found in project`); //TODO: replace with exception
+                        return;
+                    }
+                    let paramsParsed: z.SafeParseReturnType<any, any> | undefined;
+                    if (tool.config.schema) {
+                        paramsParsed = (tool.config.schema as z.Schema).safeParse(JSON.parse(toolCall.function.arguments));
+                        if (!paramsParsed.success) {
+                            //TODO: implement retry system for bad arguments
+                            throw new FragolaError("Tool arguments parsing fail");
+                        }
+                    }
+                    const content = tool.config.handler?.constructor.name == "AsyncFunction" ? await tool.config.handler(paramsParsed?.data) : tool.config.handler(paramsParsed?.data);
+                    const message: ChatCompletionMessageParam = {
+                        role: "tool",
+                        content: JSON.stringify(content),
+                        tool_call_id: toolCall.id
+                    }
+                    this.updateConversation((prev) => [...prev, message]);
+                }));
+                return await this.recursiveAgent(this.conversation, iter + 1);
+            }
+        }
+    }
+
     public async userMessage(message: Omit<OpenAI.Chat.ChatCompletionUserMessageParam, "role">): Promise<boolean> {
         if (!this.isRunning) {
             console.warn("You called userMessage() without calling start()");
@@ -390,42 +511,7 @@ export class Run {
         );
         if (canAppend) {
             this.updateConversation(prev => [...prev, { role: "user", ...message }]);
-            let aiMessage: Partial<OpenAI.Chat.ChatCompletionMessageParam> = {};
-                const stream = await this.sdk.chat.completions.create({ ...this.params, messages: this.conversation });
-                if (Symbol.asyncIterator in stream) {
-                    let replaceLast = false;
-
-                    // Streaming
-                    this.applyHook("streamStart", this.controller!);
-                    for await (const chunk of stream) {
-                        this.applyHook("streamChunk", this.controller!, chunk);
-                        aiMessage = streamChunkToMessage(chunk, aiMessage);
-                        this.appendMessages([aiMessage as OpenAI.Chat.ChatCompletionMessageParam], replaceLast);
-                        replaceLast = true;
-                    }
-                    this.applyHook("streamEnd", this.controller!);
-
-                    // Tool calls
-                    if (aiMessage.role == "assistant" && aiMessage.tool_calls && aiMessage.tool_calls.length) {
-                        await Promise.all(aiMessage.tool_calls.map(async toolCall => {
-                            const tool = this.project.tools.find(tool => tool.config.name == toolCall.function.name);
-                            if (!tool) {
-                                console.error(`Tool with name ${toolCall.function.name} not found in project`); //TODO: replace with exception
-                                return ;
-                            }
-                            let paramsParsed: z.SafeParseReturnType<any, any> | undefined;
-                            if (tool.config.schema) {
-                                paramsParsed = (tool.config.schema as z.Schema).safeParse(JSON.parse(toolCall.function.arguments));
-                                if (!paramsParsed.success) {
-                                    //TODO: replace with exception
-                                    console.error(`Zod parse fail for tool '${toolCall.function.name}'`);
-                                }
-                            }
-                        }));
-                    }
-                } else {
-                    console.error("Stream is not async iterable.");
-                }
+            await this.recursiveAgent(this.conversation);
             return true;
         }
         return false;

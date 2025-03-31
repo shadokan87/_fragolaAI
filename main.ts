@@ -19,26 +19,20 @@ async function main() {
     const navigationRun = fragola.createRun("navigation", {
         model: 'us.anthropic.claude-3-5-haiku-20241022-v1:0' as any,
         temperature: 1,
-        stream: true
+        stream: true,
+        tool_choice: "auto"
     });
 
     // navigationRun.registerHook("streamChunk", (_, chunk) => {
     //     console.log(chunk.choices[0]?.delta?.content);
     // })
     navigationRun.registerHook("conversationUpdate", async (controller, messages) => {
-        // console.log("messages: ", messages);
+        console.log("messages: ", messages);
         // conversation = messages
     });
     navigationRun.start();
-    await navigationRun.userMessage({content: "say this is a test"});
-    await navigationRun.userMessage({content: "write a short poem"});
-
-    // const remove = navigationRun.registerHook("toolRequested", (controller) => {
-        
-    // });
-
-    // navigationRun.registerHook("runStart", ())
-    // let history: OpenAI.ChatCompletionMessageParam[] = [];
+    await navigationRun.userMessage({content: "what is the weather in san Paris"});
+    // await navigationRun.userMessage({content: "write a short poem"});
     
 }
 
