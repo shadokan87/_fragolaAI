@@ -25,7 +25,7 @@ async function main() {
 
     const router = fragola.createMessageRouter({
         "default": shopBrowserRun,
-        "the user wants to refund an article": shopBrowserRun
+        "the user wants to refund an article": shopBrowserRun,
     });
 
     // shopBrowserRun.registerHook("conversationUpdate", async (controller, messages) => {
