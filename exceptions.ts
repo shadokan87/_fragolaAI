@@ -12,7 +12,7 @@ export class FragolaError extends Error {
 // Specific exception class
 export class AgentNotFoundError extends FragolaError {
     constructor(agentId: string) {
-        super(`Agent with ID "${agentId}" was not found.`);
+        super(`You tried to call \`createRun\` with agent ID "${agentId}" but it was not found.`);
         this.name = 'AgentNotFoundError';
         if (Error.captureStackTrace) {
             Error.captureStackTrace(this, AgentNotFoundError);

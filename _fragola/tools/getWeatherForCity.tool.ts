@@ -1,5 +1,5 @@
 import z from "zod";
-import { Fragola } from "../../../lib";
+import { Fragola } from "../../lib";
 
 const tool = Fragola.createTool({
     name: "getWeatherForCity",

@@ -16,27 +16,24 @@ async function main() {
 
     await fragola.init();
     let conversation: OpenAI.ChatCompletionMessageParam[] = [];
-    const navigationRun = fragola.createRun("navigation", {
+    const shopBrowserRun = fragola.createRun("shopBrowser", {
         model: 'us.anthropic.claude-3-5-haiku-20241022-v1:0' as any,
         temperature: 1,
         stream: true,
         tool_choice: "auto"
     });
 
-    const dispatch = fragola.createDispatch({
-        "default": navigationRun,
-        "the user wants to refund an artile": navigationRun
+    const router = fragola.createMessageRouter({
+        "default": shopBrowserRun,
+        "the user wants to refund an article": shopBrowserRun
     });
 
-    navigationRun.registerHook("conversationUpdate", async (controller, messages) => {
-        console.log("messages: ", messages);
-        // conversation = messages
-    });
-    navigationRun.start();
-    await navigationRun.userMessage({content: "what is the weather in Paris"});
-    // await navigationRun.userMessage({content: "what is the weather in san Francisco"});
-    // await navigationRun.userMessage({content: "what is the weather in Mexico"});
-    // await navigationRun.userMessage({content: "write a short poem"});
+    // shopBrowserRun.registerHook("conversationUpdate", async (controller, messages) => {
+    //     console.log("messages: ", messages);
+    //     // conversation = messages
+    // });
+    // shopBrowserRun.start();
+    // await shopBrowserRun.userMessage({content: "what is the weather in Paris"});
     
 }
 
