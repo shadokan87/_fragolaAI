@@ -23,15 +23,19 @@ async function main() {
         tool_choice: "auto"
     });
 
-    // navigationRun.registerHook("streamChunk", (_, chunk) => {
-    //     console.log(chunk.choices[0]?.delta?.content);
-    // })
+    const dispatch = fragola.createDispatch({
+        "default": navigationRun,
+        "the user wants to refund an artile": navigationRun
+    });
+
     navigationRun.registerHook("conversationUpdate", async (controller, messages) => {
         console.log("messages: ", messages);
         // conversation = messages
     });
     navigationRun.start();
-    await navigationRun.userMessage({content: "what is the weather in san Paris"});
+    await navigationRun.userMessage({content: "what is the weather in Paris"});
+    // await navigationRun.userMessage({content: "what is the weather in san Francisco"});
+    // await navigationRun.userMessage({content: "what is the weather in Mexico"});
     // await navigationRun.userMessage({content: "write a short poem"});
     
 }

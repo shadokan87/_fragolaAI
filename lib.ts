@@ -209,7 +209,7 @@ export class Fragola {
                     try {
                         const content = readFileSync(node.custom.fullPath, 'utf-8'); // Specify encoding
                         return {
-                            name: node.name,
+                            name: node.name.split(".")[0],
                             path: node.custom.fullPath,
                             content: content
                         };
@@ -294,6 +294,7 @@ export class Run {
     public agent: Fragola.Agent | undefined;
     private hooks: Map<Fragola.runEventType, hookStore<any>[]> = new Map();
     private conversation: OpenAI.ChatCompletionMessageParam[] = [];
+    private systemPrompt: OpenAI.ChatCompletionSystemMessageParam = { role: "system", content: "" };
     private runConfig: {
         agentTools: Fragola.Tool[]
     } = { agentTools: [] }
@@ -304,11 +305,27 @@ export class Run {
         this.agent = project.agents.find(agent => agent.name == agentName);
         if (!this.agent)
             throw new AgentNotFoundError(agentName);
+        const agent: Fragola.Agent = this.agent;
         this.agentToRunConfig();
         this.controller = {
             isRunning: this.isRunning,
             stopRun: () => { },
         }
+        if (!agent.config.prompt && !agent.config.instructions) {
+            const _default = agent.prompts.find(prompt => prompt.name == "default");
+            if (!_default)
+                throw new AgentConfigError(agent.name, "No instructions given for agent.\n- create a default.md file\n- create a .md prompt file and pass the name to `prompt` parameter of createAgent function\n- Provide `instructions` parameter to `createAgent` function\n");
+            this.systemPrompt = {role: "system", content: _default.content};
+        } else if (agent.config.prompt && !agent.config.instructions) {
+            const prompt = agent.prompts.find(prompt => prompt.name == agent?.config.prompt);
+            if (!prompt)
+                throw new AgentConfigError(agent.name, `\`prompt\` parameter provided but the file does not exist. Expected file with name: ${agent.config.prompt}.md`)
+        } else if (agent.config.instructions) {
+            if (agent.config.prompt)
+                console.warn(`Agent ${agent.name}: prompt \`${agent.config.prompt}\` has been ignored because \`instructions\` parameter is provided.`);
+            this.systemPrompt = {role: "system", content: agent.config.instructions}
+        } else
+            throw new AgentConfigError(agent.name, "");
     }
 
     private async agentToRunConfig() {
@@ -450,13 +467,12 @@ export class Run {
         });
     }
 
-
-    private async recursiveAgent(messages: OpenAI.ChatCompletionMessageParam[], iter = 0): Promise<void> {
+    private async recursiveAgent(iter = 0): Promise<void> {
         if (iter == 5) {
             console.error("max iter");
             return ;
         }
-        const stream = await this.sdk.chat.completions.create({ ...this.params, messages: this.conversation, tools: this.paramsTools?.length ? this.paramsTools : [] });
+        const stream = await this.sdk.chat.completions.create({ ...this.params, messages: [this.systemPrompt, ...this.conversation], tools: this.paramsTools?.length ? this.paramsTools : [] });
         let aiMessage: Partial<OpenAI.Chat.ChatCompletionMessageParam> = {};
         if (Symbol.asyncIterator in stream) {
             let replaceLast = false;
@@ -474,6 +490,7 @@ export class Run {
             // Tool calls
             if (aiMessage.role == "assistant" && aiMessage.tool_calls && aiMessage.tool_calls.length) {
                 await Promise.all(aiMessage.tool_calls.map(async toolCall => {
+                    // Find tool in project that matches the tool requested by last ai message
                     const tool = this.project.tools.find(tool => tool.config.name == toolCall.function.name);
                     if (!tool) {
                         console.error(`Tool with name ${toolCall.function.name} not found in project`); //TODO: replace with exception
@@ -495,7 +512,7 @@ export class Run {
                     }
                     this.updateConversation((prev) => [...prev, message]);
                 }));
-                return await this.recursiveAgent(this.conversation, iter + 1);
+                return await this.recursiveAgent(iter + 1);
             }
         }
     }
@@ -511,7 +528,7 @@ export class Run {
         );
         if (canAppend) {
             this.updateConversation(prev => [...prev, { role: "user", ...message }]);
-            await this.recursiveAgent(this.conversation);
+            await this.recursiveAgent();
             return true;
         }
         return false;

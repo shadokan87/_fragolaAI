@@ -23,7 +23,7 @@ export class AgentNotFoundError extends FragolaError {
 // Specific exception class
 export class AgentConfigError extends FragolaError {
     constructor(agentId: string, message: string) { //TODO: remove agentId parameter
-        super(message);
+        super(`Agent '${agentId}': message`);
         this.name = 'AgentConfigError';
         if (Error.captureStackTrace) {
             Error.captureStackTrace(this, AgentConfigError);
