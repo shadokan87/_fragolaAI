@@ -23,9 +23,16 @@ async function main() {
         tool_choice: "auto"
     });
 
+     const shopRefundRun = fragola.createRun("shopRefund", {
+        model: 'us.anthropic.claude-3-5-haiku-20241022-v1:0' as any,
+        temperature: 1,
+        stream: true,
+        tool_choice: "auto"
+    });
+
     const router = fragola.createMessageRouter({
         "default": shopBrowserRun,
-        "the user wants to refund an article": shopBrowserRun,
+        "the user wants to refund an article": shopRefundRun,
     });
 
     // shopBrowserRun.registerHook("conversationUpdate", async (controller, messages) => {
